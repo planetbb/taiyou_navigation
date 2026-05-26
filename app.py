@@ -57,13 +57,9 @@ SPREADSHEET_ID = "1D5htK-ueN4yI-gJVc4xLB60aa3FhVeweYN9DNwjRqkE"
 # ── 4. 🔍 gspread 인증 및 구글 시트 데이터 제어 함수 ──────────────────
 def get_gspread_client():
     try:
-        # Secrets에 저장된 TOML 데이터를 딕셔너리로 가져옴
         creds_dict = dict(st.secrets["google_credentials"])
-        
-        # 🔑 암호 키 내부의 글자 형태 \\n을 진짜 줄바꿈 \n으로 치환
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
         return gspread.service_account_from_dict(creds_dict)
     except Exception as e:
         st.error(f"구글 인증 연동 실패: {str(e)}")
@@ -74,16 +70,14 @@ def load_schools_from_sheets():
     if not gc: return []
     try:
         sh = gc.open_by_key(SPREADSHEET_ID)
-        worksheet = sh.get_worksheet(0) # 첫 번째 시트 선택
+        worksheet = sh.get_worksheet(0)
         records = worksheet.get_all_records()
         
         if not records: return []
         
         schools_list = []
         for row in records:
-            # 🔥 [KeyError 방지] 구글 시트 컬럼명의 대소문자 유연화 및 공백 제거
             r = {str(k).strip().lower(): v for k, v in row.items()}
-            
             try:
                 fit_breakdown = json.loads(r.get("fitbreakdown", "{}")) if r.get("fitbreakdown") else {}
                 schedule = json.loads(r.get("schedule", "{}")) if r.get("schedule") else {}
@@ -93,7 +87,7 @@ def load_schools_from_sheets():
 
             schools_list.append({
                 "country": r.get("country", "—"),
-                "school": r.get("school", "—"),  # 이제 대소문자 무관하게 잘 매칭됩니다.
+                "school": r.get("school", "—"),
                 "major": r.get("major", "—"),
                 "acceptance": r.get("acceptance", "—"),
                 "fitScore": int(r.get("fitscore", 50)) if str(r.get("fitscore")).isdigit() else 50,
@@ -121,13 +115,9 @@ def save_schools_to_sheets(schools_list):
     try:
         sh = gc.open_by_key(SPREADSHEET_ID)
         worksheet = sh.get_worksheet(0)
-        
-        # 기존 시트 초기화
         worksheet.clear() 
         
-        # 헤더 조립
         headers = list(ROW_LABELS.keys()) + ["fitBreakdown", "sourceUrl", "sourceNote"]
-        
         if not schools_list:
             worksheet.append_row(headers)
             return
@@ -154,7 +144,6 @@ def save_schools_to_sheets(schools_list):
                 s.get("sourceUrl", ""), 
                 s.get("sourceNote", "")
             ])
-            
         worksheet.update(range_name='A1', values=rows)
     except Exception as e:
         st.error(f"구글 시트 저장 오류: {str(e)}")
@@ -243,7 +232,7 @@ with tab_a:
                     st.success(f"🎉 {school_inp} 데이터가 구글 스프레드시트에 안전하게 영구 저장되었습니다!")
                     st.rerun()
 
-st.divider()
+    st.divider()
 
     if not st.session_state.schools:
         st.info("💡 상단에 타겟 학교를 입력하면 구글 시트에 자동으로 누적 데이터베이스가 구축됩니다.")
