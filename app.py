@@ -1,8 +1,3 @@
-오류를 완전히 뿌리뽑고 streamlit_gsheets 라이브러리의 버그로부터 완벽하게 독립할 수 있도록, gspread 정석 문법으로 100% 리팩토링한 app.py 전체 코드입니다.
-
-기존 코드를 이 내용으로 전체 덮어쓰기(Ctrl+A -> Ctrl+V) 하신 후 GitHub에 Push해 주세요.
-
-Python
 import streamlit as st
 import json
 import re
