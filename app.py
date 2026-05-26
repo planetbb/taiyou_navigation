@@ -1,3 +1,8 @@
+오류를 완전히 뿌리뽑고 streamlit_gsheets 라이브러리의 버그로부터 완벽하게 독립할 수 있도록, gspread 정석 문법으로 100% 리팩토링한 app.py 전체 코드입니다.
+
+기존 코드를 이 내용으로 전체 덮어쓰기(Ctrl+A -> Ctrl+V) 하신 후 GitHub에 Push해 주세요.
+
+Python
 import streamlit as st
 import json
 import re
@@ -7,9 +12,9 @@ import plotly.express as px
 from datetime import datetime
 from google import genai
 from google.genai import types
-from streamlit_gsheets import GSheetsConnection  # 구글 시트 커넥션 라이브러리
+import gspread  # 오리지널 구글 시트 라이브러리 사용
 
-# ── 페이지 설정 ───────────────────────────────────────────
+# ── 1. 페이지 설정 ───────────────────────────────────────────
 st.set_page_config(
     page_title="김태유 진로지도",
     page_icon="🎓",
@@ -17,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── CSS 스타일 적용 ─────────────────────────────────────────
+# ── 2. CSS 스타일 적용 ─────────────────────────────────────────
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] { background: #f8f9fa; }
@@ -30,7 +35,7 @@ div[data-testid="metric-container"] { background:white; border-radius:10px; padd
 </style>
 """, unsafe_allow_html=True)
 
-# ── 학생 프로필 및 라벨 상수 ──────────────────────────────
+# ── 3. 학생 프로필 및 라벨 상수 ──────────────────────────────
 IB_HL = ["화학", "영어A", "히스토리"]
 IB_SL = ["한국어", "일본어", "수학"]
 
@@ -52,23 +57,33 @@ ROW_LABELS = {
     "earlyApp":     "얼리 지원 가능",
 }
 
-# ── 🔍 구글 스프레드시트 데이터 동기화 함수 ──────────────────
-# 캐싱을 제거하여 실시간으로 구글 시트의 최신 정보를 주고받도록 설정
-conn = st.connection("gsheets", type=GSheetsConnection)
+SPREADSHEET_ID = "1D5htK-ueN4yI-gJVc4xLB60aa3FhVeweYN9DNwjRqkE"
+
+# ── 4. 🔍 gspread 인증 및 구글 시트 데이터 제어 함수 ──────────────────
+def get_gspread_client():
+    try:
+        # Secrets에 저장된 순수 JSON 텍스트를 파싱하여 크레덴셜 생성
+        creds_dict = json.loads(st.secrets["google_credentials"]["json_text"])
+        return gspread.service_account_from_dict(creds_dict)
+    except Exception as e:
+        st.error(f"구글 인증 연동 실패: {str(e)}")
+        return None
 
 def load_schools_from_sheets():
+    gc = get_gspread_client()
+    if not gc: return []
     try:
-        df = conn.read(worksheet="Sheet1", ttl=0)
-        # 데이터가 아예 비어있거나 헤더만 있는 경우 예외처리
-        if df.empty or len(df) == 0:
-            return []
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        worksheet = sh.get_worksheet(0) # 첫 번째 시트 선택
+        records = worksheet.get_all_records()
+        
+        if not records: return []
         
         schools_list = []
-        for _, row in df.iterrows():
-            # 문자열로 저장된 JSON 파싱 구조 복원
+        for row in records:
             try:
-                fit_breakdown = json.loads(row["fitBreakdown"]) if pd.notna(row["fitBreakdown"]) else {}
-                schedule = json.loads(row["schedule"]) if pd.notna(row["schedule"]) else {}
+                fit_breakdown = json.loads(row.get("fitBreakdown", "{}")) if row.get("fitBreakdown") else {}
+                schedule = json.loads(row.get("schedule", "{}")) if row.get("schedule") else {}
             except:
                 fit_breakdown = {}
                 schedule = {}
@@ -78,7 +93,7 @@ def load_schools_from_sheets():
                 "school": row.get("school", "—"),
                 "major": row.get("major", "—"),
                 "acceptance": row.get("acceptance", "—"),
-                "fitScore": int(row.get("fitScore", 50)) if pd.notna(row.get("fitScore")) else 50,
+                "fitScore": int(row.get("fitScore", 50)) if str(row.get("fitScore")).isdigit() else 50,
                 "fitBreakdown": fit_breakdown,
                 "minIB": row.get("minIB", "—"),
                 "requirements": row.get("requirements", "—"),
@@ -98,38 +113,52 @@ def load_schools_from_sheets():
         return []
 
 def save_schools_to_sheets(schools_list):
-    if not schools_list:
-        # 빈 데이터프레임 구조 생성 후 업데이트하여 전체 초기화 구현
-        empty_df = pd.DataFrame(columns=list(ROW_LABELS.keys()) + ["fitBreakdown", "sourceUrl", "sourceNote"])
-        conn.update(worksheet="Sheet1", data=empty_df)
-        return
+    gc = get_gspread_client()
+    if not gc: return
+    try:
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        worksheet = sh.get_worksheet(0)
         
-    rows = []
-    for s in schools_list:
-        rows.append({
-            "country": s.get("country"),
-            "school": s.get("school"),
-            "major": s.get("major"),
-            "acceptance": s.get("acceptance"),
-            "fitScore": s.get("fitScore"),
-            "fitBreakdown": json.dumps(s.get("fitBreakdown"), ensure_ascii=False), # 딕셔너리는 JSON 문자열로 저장
-            "minIB": s.get("minIB"),
-            "requirements": s.get("requirements"),
-            "tuition": s.get("tuition"),
-            "dorm": s.get("dorm"),
-            "living": s.get("living"),
-            "scholarship": s.get("scholarship"),
-            "intlRatio": s.get("intlRatio"),
-            "schedule": json.dumps(s.get("schedule"), ensure_ascii=False),
-            "documents": s.get("documents"),
-            "earlyApp": s.get("earlyApp"),
-            "sourceUrl": s.get("sourceUrl"),
-            "sourceNote": s.get("sourceNote")
-        })
-    df_to_save = pd.DataFrame(rows)
-    conn.update(worksheet="Sheet1", data=df_to_save)
+        # 1. 시트 내용 깨끗하게 비우기
+        worksheet.clear() 
+        
+        # 2. 컬럼 헤더 세팅
+        headers = list(ROW_LABELS.keys()) + ["fitBreakdown", "sourceUrl", "sourceNote"]
+        
+        if not schools_list:
+            worksheet.append_row(headers)
+            return
+            
+        # 3. 데이터 로우 조립
+        rows = [headers]
+        for s in schools_list:
+            rows.append([
+                s.get("country", ""), 
+                s.get("school", ""), 
+                s.get("major", ""), 
+                s.get("acceptance", ""),
+                s.get("fitScore", 50), 
+                json.dumps(s.get("fitBreakdown", {}), ensure_ascii=False),
+                s.get("minIB", ""), 
+                s.get("requirements", ""), 
+                s.get("tuition", ""), 
+                s.get("dorm", ""),
+                s.get("living", ""), 
+                s.get("scholarship", ""), 
+                s.get("intlRatio", ""),
+                json.dumps(s.get("schedule", {}), ensure_ascii=False), 
+                s.get("documents", ""),
+                s.get("earlyApp", ""), 
+                s.get("sourceUrl", ""), 
+                s.get("sourceNote", "")
+            ])
+            
+        # 4. A1 셀 기점으로 원샷 덮어쓰기 (UnsupportedOperationError 원천 해결)
+        worksheet.update(range_name='A1', values=rows)
+    except Exception as e:
+        st.error(f"구글 시트 저장 오류: {str(e)}")
 
-# ── 세션 데이터 초기 로드 ──────────────────────────────────
+# ── 5. 세션 데이터 초기 로드 ──────────────────────────────────
 if "schools" not in st.session_state:
     st.session_state.schools = load_schools_from_sheets()
 
@@ -138,7 +167,7 @@ def parse_ib_score(school_dict):
     match = re.search(r"(\d+)", str(min_ib))
     return int(match.group(1)) if match else 99
 
-# ── Gemini 정보 추출 함수 ────────────────────────────────
+# ── 6. Gemini 정보 추출 함수 ────────────────────────────────
 def fetch_school_data_via_gemini(api_key, country, school, major):
     client = genai.Client(api_key=api_key)
     system_instruction = "You are an expert college admissions consultant. Analyze data based on the latest guidelines and reply strictly in JSON format matching the schema."
@@ -159,11 +188,11 @@ def fetch_school_data_via_gemini(api_key, country, school, major):
         st.error(f"Gemini API 에러: {str(e)}")
         return None
 
-# ── 헤더 타이틀 ──────────────────────────────────────────
-st.markdown('<div class="main-title">🎓 김태유 진로지도 대시보드 (구글 시트 실시간 연동판)</div>', unsafe_allow_html=True)
+# ── 7. 헤더 타이틀 ──────────────────────────────────────────
+st.markdown('<div class="main-title">🎓 김태유 진로지도 대시보드</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="sub-title">IB 매칭 조합 ── HL: {" · ".join(IB_HL)} | SL: {" · ".join(IB_SL)}</div>', unsafe_allow_html=True)
 
-# ── 사이드바 ⚙️ 설정 ──────────────────────────────────────
+# ── 8. 사이드바 ⚙️ 설정 ──────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ API 및 데이터 설정")
     gemini_key = st.text_input("Gemini API Key 입력", type="password")
@@ -173,7 +202,6 @@ with st.sidebar:
     st.divider()
     st.subheader("📊 데이터 가동 상태")
     
-    # 🔄 [수동 새로고침 버튼] 구글 시트에서 직접 수정한 내용을 앱으로 즉시 불러옵니다.
     if st.button("🔄 구글 시트 데이터 불러오기", use_container_width=True):
         st.session_state.schools = load_schools_from_sheets()
         st.success("구글 시트의 최신 데이터를 가져왔습니다!")
@@ -187,7 +215,7 @@ with st.sidebar:
         
     st.caption(f"현재 로드된 대학교: **{len(st.session_state.schools)}개**")
 
-# ── 메인 탭 구성 ──────────────────────────────────────────
+# ── 9. 메인 탭 구성 ──────────────────────────────────────────
 tab_a, tab_b, tab_c = st.tabs(["📋 표 A — AI 검색 및 학교 데이터", "📊 표 B — 적성 분석", "📅 표 C — 지원 일정"])
 
 # ════════════════════════════════════════════════════════
@@ -209,9 +237,7 @@ with tab_a:
             with st.spinner("AI가 입학 가이드라인을 분석하여 구글 시트에 실시간 기록 중입니다..."):
                 fetched_data = fetch_school_data_via_gemini(gemini_key, country_inp, school_inp, major_inp)
                 if fetched_data:
-                    # 1. 로컬 세션 상태에 반영
                     st.session_state.schools.append(fetched_data)
-                    # 2. 구글 스프레드시트에 즉시 쓰기(Write) 연동 실행
                     save_schools_to_sheets(st.session_state.schools)
                     st.success(f"🎉 {school_inp} 데이터가 구글 스프레드시트에 안전하게 영구 저장되었습니다!")
                     st.rerun()
@@ -221,7 +247,6 @@ with tab_a:
     if not st.session_state.schools:
         st.info("💡 상단에 타겟 학교를 입력하면 구글 시트에 자동으로 누적 데이터베이스가 구축됩니다.")
     else:
-        # 요약 정보 메트릭스
         scores = [s.get("fitScore", 0) for s in st.session_state.schools]
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("누적 등록 학교", f"{len(st.session_state.schools)}개")
@@ -232,7 +257,6 @@ with tab_a:
 
         st.divider()
 
-        # 2열 카드 레이아웃 시각화
         for i in range(0, len(st.session_state.schools), 2):
             cols = st.columns(2)
             for j, col in enumerate(cols):
@@ -251,7 +275,7 @@ with tab_a:
                         with del_col:
                             if st.button("🗑️", key=f"del_{s['school']}_{idx}"):
                                 st.session_state.schools.pop(idx)
-                                save_schools_to_sheets(st.session_state.schools) # 삭제 내역 시트에 즉시 반영
+                                save_schools_to_sheets(st.session_state.schools)
                                 st.rerun()
 
                         rows = []
@@ -272,7 +296,7 @@ with tab_a:
                         st.divider()
 
 # ════════════════════════════════════════════════════════
-# 📊 표 B — 과목 매칭 및 적성 분석 (동일 연동)
+# 📊 표 B — 과목 매칭 및 적성 분석
 # ════════════════════════════════════════════════════════
 with tab_b:
     st.subheader("🎯 학생 맞춤형 IB 과목 적합도 스크리닝")
@@ -295,7 +319,7 @@ with tab_b:
         st.plotly_chart(fig_radar, use_container_width=True)
 
 # ════════════════════════════════════════════════════════
-# 📅 표 C — 원서 접수 및 마감 타임라인 (동일 연동)
+# 📅 표 C — 원서 접수 및 마감 타임라인
 # ════════════════════════════════════════════════════════
 with tab_c:
     st.subheader("📅 입학 전형 일정 관리 매트릭스")
@@ -326,4 +350,4 @@ with tab_c:
                     if val == label: return f"background-color:{color};color:white;font-weight:600;text-align:center;"
                 return ""
 
-            st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use
