@@ -2,3 +2,5 @@ streamlit
 google-genai
 plotly
 pandas
+st-gsheets-connection
+gspread
