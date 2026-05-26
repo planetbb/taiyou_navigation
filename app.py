@@ -34,22 +34,23 @@ div[data-testid="metric-container"] { background:white; border-radius:10px; padd
 IB_HL = ["화학", "영어A", "히스토리"]
 IB_SL = ["한국어", "일본어", "수학"]
 
+# 🔥 코드 가독성과 대소문자 충돌 방지를 위해 매핑 라벨의 키를 모두 소문자로 통일합니다.
 ROW_LABELS = {
     "country":      "국가",
     "school":       "학교",
     "major":        "전공",
     "acceptance":   "합격율 (TO/지원자)",
-    "fitScore":     "적성 적합도",
-    "minIB":        "최소 IB 점수",
+    "fitscore":     "적성 적합도",
+    "minib":        "최소 IB 점수",
     "requirements": "우대조건 (HL/SL 요건)",
     "tuition":      "연간 학비",
     "dorm":         "기숙사 유무",
     "living":       "연간 생활비",
     "scholarship":  "국제학생 장학금",
-    "intlRatio":    "국제학생 비율",
+    "intlratio":    "국제학생 비율",
     "schedule":     "지원 일정",
     "documents":    "필요 서류",
-    "earlyApp":     "얼리 지원 가능",
+    "earlyapp":     "얼리 지원 가능",
 }
 
 SPREADSHEET_ID = "1D5htK-ueN4yI-gJVc4xLB60aa3FhVeweYN9DNwjRqkE"
@@ -77,6 +78,7 @@ def load_schools_from_sheets():
         
         schools_list = []
         for row in records:
+            # 모든 구글 시트 데이터를 안전하게 소문자 키로 치환
             r = {str(k).strip().lower(): v for k, v in row.items()}
             try:
                 fit_breakdown = json.loads(r.get("fitbreakdown", "{}")) if r.get("fitbreakdown") else {}
@@ -90,20 +92,20 @@ def load_schools_from_sheets():
                 "school": r.get("school", "—"),
                 "major": r.get("major", "—"),
                 "acceptance": r.get("acceptance", "—"),
-                "fitScore": int(r.get("fitscore", 50)) if str(r.get("fitscore")).isdigit() else 50,
-                "fitBreakdown": fit_breakdown,
-                "minIB": r.get("minib", "—"),
+                "fitscore": int(r.get("fitscore", 50)) if str(r.get("fitscore")).isdigit() else 50,
+                "fitbreakdown": fit_breakdown,
+                "minib": r.get("minib", "—"),
                 "requirements": r.get("requirements", "—"),
                 "tuition": r.get("tuition", "—"),
                 "dorm": r.get("dorm", "—"),
                 "living": r.get("living", "—"),
                 "scholarship": r.get("scholarship", "—"),
-                "intlRatio": r.get("intlratio", "—"),
+                "intlratio": r.get("intlratio", "—"),
                 "schedule": schedule,
                 "documents": r.get("documents", "—"),
-                "earlyApp": r.get("earlyapp", "—"),
-                "sourceUrl": r.get("sourceurl", ""),
-                "sourceNote": r.get("sourcenote", "")
+                "earlyapp": r.get("earlyapp", "—"),
+                "sourceurl": r.get("sourceurl", ""),
+                "sourcenote": r.get("sourcenote", "")
             })
         return schools_list
     except Exception as e:
@@ -117,7 +119,7 @@ def save_schools_to_sheets(schools_list):
         worksheet = sh.get_worksheet(0)
         worksheet.clear() 
         
-        headers = list(ROW_LABELS.keys()) + ["fitBreakdown", "sourceUrl", "sourceNote"]
+        headers = list(ROW_LABELS.keys()) + ["fitbreakdown", "sourceurl", "sourcenote"]
         if not schools_list:
             worksheet.append_row(headers)
             return
@@ -129,20 +131,20 @@ def save_schools_to_sheets(schools_list):
                 s.get("school", ""), 
                 s.get("major", ""), 
                 s.get("acceptance", ""),
-                s.get("fitScore", 50), 
-                json.dumps(s.get("fitBreakdown", {}), ensure_ascii=False),
-                s.get("minIB", ""), 
+                s.get("fitscore", 50), 
+                json.dumps(s.get("fitbreakdown", {}), ensure_ascii=False),
+                s.get("minib", ""), 
                 s.get("requirements", ""), 
                 s.get("tuition", ""), 
                 s.get("dorm", ""),
                 s.get("living", ""), 
                 s.get("scholarship", ""), 
-                s.get("intlRatio", ""),
+                s.get("intlratio", ""),
                 json.dumps(s.get("schedule", {}), ensure_ascii=False), 
                 s.get("documents", ""),
-                s.get("earlyApp", ""), 
-                s.get("sourceUrl", ""), 
-                s.get("sourceNote", "")
+                s.get("earlyapp", ""), 
+                s.get("sourceurl", ""), 
+                s.get("sourcenote", "")
             ])
         worksheet.update(range_name='A1', values=rows)
     except Exception as e:
@@ -153,15 +155,15 @@ if "schools" not in st.session_state:
     st.session_state.schools = load_schools_from_sheets()
 
 def parse_ib_score(school_dict):
-    min_ib = school_dict.get("minIB", "—")
+    min_ib = school_dict.get("minib", "—")
     match = re.search(r"(\d+)", str(min_ib))
     return int(match.group(1)) if match else 99
 
 # ── 6. Gemini 정보 추출 함수 ────────────────────────────────
 def fetch_school_data_via_gemini(api_key, country, school, major):
     client = genai.Client(api_key=api_key)
-    system_instruction = "You are an expert college admissions consultant. Analyze data based on the latest guidelines and reply strictly in JSON format matching the schema."
-    user_prompt = f"Target University: {school} in {country}, Major: {major}. IB choices: HL(화학, 영어A, 히스토리), SL(한국어, 일본어, 수학). Return JSON matching dashboard specifications."
+    system_instruction = "You are an expert college admissions consultant. Analyze data based on the latest guidelines and reply strictly in JSON format matching the schema using lowercase keys specified in ROW_LABELS."
+    user_prompt = f"Target University: {school} in {country}, Major: {major}. IB choices: HL(화학, 영어A, 히스토리), SL(한국어, 일본어, 수학). Return JSON with lowercase keys matching schema."
 
     try:
         response = client.models.generate_content(
@@ -227,7 +229,9 @@ with tab_a:
             with st.spinner("AI가 입학 가이드라인을 분석하여 구글 시트에 실시간 기록 중입니다..."):
                 fetched_data = fetch_school_data_via_gemini(gemini_key, country_inp, school_inp, major_inp)
                 if fetched_data:
-                    st.session_state.schools.append(fetched_data)
+                    # 💡 강제 소문자 치환 규격화 후 추가
+                    normalized_data = {str(k).strip().lower(): v for k, v in fetched_data.items()}
+                    st.session_state.schools.append(normalized_data)
                     save_schools_to_sheets(st.session_state.schools)
                     st.success(f"🎉 {school_inp} 데이터가 구글 스프레드시트에 안전하게 영구 저장되었습니다!")
                     st.rerun()
@@ -237,7 +241,8 @@ with tab_a:
     if not st.session_state.schools:
         st.info("💡 상단에 타겟 학교를 입력하면 구글 시트에 자동으로 누적 데이터베이스가 구축됩니다.")
     else:
-        scores = [s.get("fitScore", 0) for s in st.session_state.schools]
+        # 🔥 [KeyError 근본 해결] 모든 연산에서 소문자 "fitscore"와 "school"을 명시합니다.
+        scores = [s.get("fitscore", 0) for s in st.session_state.schools]
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("누적 등록 학교", f"{len(st.session_state.schools)}개")
         m2.metric("평균 매칭도", f"{sum(scores)//len(scores)}점" if scores else "—")
@@ -253,7 +258,7 @@ with tab_a:
                 idx = i + j
                 if idx >= len(st.session_state.schools): break
                 s = st.session_state.schools[idx]
-                fit = s.get("fitScore", 50)
+                fit = s.get("fitscore", 50)
                 fit_cls = "fit-high" if fit >= 70 else ("fit-mid" if fit >= 45 else "fit-low")
 
                 with col:
@@ -270,19 +275,19 @@ with tab_a:
 
                         rows = []
                         for key, label in ROW_LABELS.items():
-                            if key in ("school", "country", "major", "fitScore"): continue
+                            if key in ("school", "country", "major", "fitscore"): continue
                             val = s.get(key, "—")
                             if key == "schedule" and isinstance(val, dict):
                                 parts = []
-                                if val.get("applicationOpen"): parts.append(f"오픈 {val['applicationOpen']}")
-                                if val.get("earlyDeadline"):   parts.append(f"얼리 {val['earlyDeadline']}")
-                                if val.get("regularDeadline"): parts.append(f"마감 {val['regularDeadline']}")
+                                if val.get("applicationopen"): parts.append(f"오픈 {val['applicationopen']}")
+                                if val.get("earlydeadline"):   parts.append(f"얼리 {val['earlydeadline']}")
+                                if val.get("regulardeadline"): parts.append(f"마감 {val['regulardeadline']}")
                                 val = " / ".join(parts) if parts else "—"
                             rows.append({"항목": label, "상세 세부 데이터": str(val)})
 
                         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=400)
-                        if s.get("sourceUrl"):
-                            st.caption(f"🔗 [공식 입학처 바로가기]({s['sourceUrl']}) | {s.get('sourceNote','')}")
+                        if s.get("sourceurl"):
+                            st.caption(f"🔗 [공식 입학처 바로가기]({s['sourceurl']}) | {s.get('sourcenote','')}")
                         st.divider()
 
 # ── 📊 표 B — 과목 매칭 및 적성 분석 ───────────────────────
@@ -292,13 +297,13 @@ with tab_b:
         st.info("시트에 저장된 대학 데이터가 없습니다.")
     else:
         DIMS = ["화학(HL)", "영어A(HL)", "히스토리(HL)", "수학(SL)", "종합 적합도"]
-        DIM_KEYS = ["chemistry", "englishA", "history", "math", "overall"]
+        DIM_KEYS = ["chemistry", "englisha", "history", "math", "overall"]
         COLORS = px.colors.qualitative.Set2
 
         fig_radar = go.Figure()
         for i, s in enumerate(st.session_state.schools):
-            bd = s.get("fitBreakdown", {})
-            vals = [bd.get(k, s.get("fitScore", 50)) for k in DIM_KEYS]
+            bd = s.get("fitbreakdown", {})
+            vals = [bd.get(k, s.get("fitscore", 50)) for k in DIM_KEYS]
             fig_radar.add_trace(go.Scatterpolar(
                 r=vals + [vals[0]], theta=DIMS + [DIMS[0]], fill="toself", 
                 name=f"{s['school']}", line_color=COLORS[i % len(COLORS)], opacity=0.6,
@@ -313,7 +318,7 @@ with tab_c:
         st.info("시트에 저장된 대학 데이터가 없습니다.")
     else:
         MONTHS = [f"{m}월" for m in range(1, 13)]
-        EVENT_TYPES = {"applicationOpen": ("접수", "#378ADD"), "earlyDeadline": ("얼리", "#7F77DD"), "regularDeadline": ("마감", "#D85A30"), "resultDate": ("결과", "#639922")}
+        EVENT_TYPES = {"applicationopen": ("접수", "#378ADD"), "earlydeadline": ("얼리", "#7F77DD"), "regulardeadline": ("마감", "#D85A30"), "resultdate": ("결과", "#639922")}
 
         for year in [2026, 2027]:
             st.markdown(f"#### 📅 {year}년도 입시 마일스톤")
