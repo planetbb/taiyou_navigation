@@ -57,8 +57,13 @@ SPREADSHEET_ID = "1D5htK-ueN4yI-gJVc4xLB60aa3FhVeweYN9DNwjRqkE"
 # ── 4. 🔍 gspread 인증 및 구글 시트 데이터 제어 함수 ──────────────────
 def get_gspread_client():
     try:
-        # Secrets에 저장된 순수 JSON 텍스트를 파싱하여 크레덴셜 생성
-        creds_dict = json.loads(st.secrets["google_credentials"]["json_text"])
+        # Secrets에 저장된 TOML 데이터를 딕셔너리로 가져옴
+        creds_dict = dict(st.secrets["google_credentials"])
+        
+        # 🔑 암호 키 내부의 글자 형태 \\n을 진짜 줄바꿈 \n으로 치환
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
         return gspread.service_account_from_dict(creds_dict)
     except Exception as e:
         st.error(f"구글 인증 연동 실패: {str(e)}")
@@ -76,32 +81,35 @@ def load_schools_from_sheets():
         
         schools_list = []
         for row in records:
+            # 🔥 [KeyError 방지] 구글 시트 컬럼명의 대소문자 유연화 및 공백 제거
+            r = {str(k).strip().lower(): v for k, v in row.items()}
+            
             try:
-                fit_breakdown = json.loads(row.get("fitBreakdown", "{}")) if row.get("fitBreakdown") else {}
-                schedule = json.loads(row.get("schedule", "{}")) if row.get("schedule") else {}
+                fit_breakdown = json.loads(r.get("fitbreakdown", "{}")) if r.get("fitbreakdown") else {}
+                schedule = json.loads(r.get("schedule", "{}")) if r.get("schedule") else {}
             except:
                 fit_breakdown = {}
                 schedule = {}
 
             schools_list.append({
-                "country": row.get("country", "—"),
-                "school": row.get("school", "—"),
-                "major": row.get("major", "—"),
-                "acceptance": row.get("acceptance", "—"),
-                "fitScore": int(row.get("fitScore", 50)) if str(row.get("fitScore")).isdigit() else 50,
+                "country": r.get("country", "—"),
+                "school": r.get("school", "—"),  # 이제 대소문자 무관하게 잘 매칭됩니다.
+                "major": r.get("major", "—"),
+                "acceptance": r.get("acceptance", "—"),
+                "fitScore": int(r.get("fitscore", 50)) if str(r.get("fitscore")).isdigit() else 50,
                 "fitBreakdown": fit_breakdown,
-                "minIB": row.get("minIB", "—"),
-                "requirements": row.get("requirements", "—"),
-                "tuition": row.get("tuition", "—"),
-                "dorm": row.get("dorm", "—"),
-                "living": row.get("living", "—"),
-                "scholarship": row.get("scholarship", "—"),
-                "intlRatio": row.get("intlRatio", "—"),
+                "minIB": r.get("minib", "—"),
+                "requirements": r.get("requirements", "—"),
+                "tuition": r.get("tuition", "—"),
+                "dorm": r.get("dorm", "—"),
+                "living": r.get("living", "—"),
+                "scholarship": r.get("scholarship", "—"),
+                "intlRatio": r.get("intlratio", "—"),
                 "schedule": schedule,
-                "documents": row.get("documents", "—"),
-                "earlyApp": row.get("earlyApp", "—"),
-                "sourceUrl": row.get("sourceUrl", ""),
-                "sourceNote": row.get("sourceNote", "")
+                "documents": r.get("documents", "—"),
+                "earlyApp": r.get("earlyapp", "—"),
+                "sourceUrl": r.get("sourceurl", ""),
+                "sourceNote": r.get("sourcenote", "")
             })
         return schools_list
     except Exception as e:
@@ -114,17 +122,16 @@ def save_schools_to_sheets(schools_list):
         sh = gc.open_by_key(SPREADSHEET_ID)
         worksheet = sh.get_worksheet(0)
         
-        # 1. 시트 내용 깨끗하게 비우기
+        # 기존 시트 초기화
         worksheet.clear() 
         
-        # 2. 컬럼 헤더 세팅
+        # 헤더 조립
         headers = list(ROW_LABELS.keys()) + ["fitBreakdown", "sourceUrl", "sourceNote"]
         
         if not schools_list:
             worksheet.append_row(headers)
             return
             
-        # 3. 데이터 로우 조립
         rows = [headers]
         for s in schools_list:
             rows.append([
@@ -148,7 +155,6 @@ def save_schools_to_sheets(schools_list):
                 s.get("sourceNote", "")
             ])
             
-        # 4. A1 셀 기점으로 원샷 덮어쓰기 (UnsupportedOperationError 원천 해결)
         worksheet.update(range_name='A1', values=rows)
     except Exception as e:
         st.error(f"구글 시트 저장 오류: {str(e)}")
@@ -242,107 +248,4 @@ with tab_a:
     if not st.session_state.schools:
         st.info("💡 상단에 타겟 학교를 입력하면 구글 시트에 자동으로 누적 데이터베이스가 구축됩니다.")
     else:
-        scores = [s.get("fitScore", 0) for s in st.session_state.schools]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("누적 등록 학교", f"{len(st.session_state.schools)}개")
-        m2.metric("평균 매칭도", f"{sum(scores)//len(scores)}점" if scores else "—")
-        m3.metric("최우수 매칭", st.session_state.schools[scores.index(max(scores))]["school"] if scores else "—")
-        sorted_by_ib = sorted(st.session_state.schools, key=parse_ib_score)
-        m4.metric("진입장벽 최저 학교", sorted_by_ib[0]["school"] if sorted_by_ib else "—")
-
-        st.divider()
-
-        for i in range(0, len(st.session_state.schools), 2):
-            cols = st.columns(2)
-            for j, col in enumerate(cols):
-                idx = i + j
-                if idx >= len(st.session_state.schools): break
-                s = st.session_state.schools[idx]
-                fit = s.get("fitScore", 50)
-                fit_cls = "fit-high" if fit >= 70 else ("fit-mid" if fit >= 45 else "fit-low")
-
-                with col:
-                    with st.container():
-                        hdr_col, del_col = st.columns([6, 1])
-                        with hdr_col:
-                            st.markdown(f"📊 **{s['school']}** &nbsp; <span class='{fit_cls}'>매칭도 {fit}점</span>", unsafe_allow_html=True)
-                            st.caption(f"{s.get('country','—')} | {s.get('major','—')}")
-                        with del_col:
-                            if st.button("🗑️", key=f"del_{s['school']}_{idx}"):
-                                st.session_state.schools.pop(idx)
-                                save_schools_to_sheets(st.session_state.schools)
-                                st.rerun()
-
-                        rows = []
-                        for key, label in ROW_LABELS.items():
-                            if key in ("school", "country", "major", "fitScore"): continue
-                            val = s.get(key, "—")
-                            if key == "schedule" and isinstance(val, dict):
-                                parts = []
-                                if val.get("applicationOpen"): parts.append(f"오픈 {val['applicationOpen']}")
-                                if val.get("earlyDeadline"):   parts.append(f"얼리 {val['earlyDeadline']}")
-                                if val.get("regularDeadline"): parts.append(f"마감 {val['regularDeadline']}")
-                                val = " / ".join(parts) if parts else "—"
-                            rows.append({"항목": label, "상세 세부 데이터": str(val)})
-
-                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=400)
-                        if s.get("sourceUrl"):
-                            st.caption(f"🔗 [공식 입학처 바로가기]({s['sourceUrl']}) | {s.get('sourceNote','')}")
-                        st.divider()
-
-# ════════════════════════════════════════════════════════
-# 📊 표 B — 과목 매칭 및 적성 분석
-# ════════════════════════════════════════════════════════
-with tab_b:
-    st.subheader("🎯 학생 맞춤형 IB 과목 적합도 스크리닝")
-    if not st.session_state.schools:
-        st.info("시트에 저장된 대학 데이터가 없습니다.")
-    else:
-        DIMS = ["화학(HL)", "영어A(HL)", "히스토리(HL)", "수학(SL)", "종합 적합도"]
-        DIM_KEYS = ["chemistry", "englishA", "history", "math", "overall"]
-        COLORS = px.colors.qualitative.Set2
-
-        fig_radar = go.Figure()
-        for i, s in enumerate(st.session_state.schools):
-            bd = s.get("fitBreakdown", {})
-            vals = [bd.get(k, s.get("fitScore", 50)) for k in DIM_KEYS]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=vals + [vals[0]], theta=DIMS + [DIMS[0]], fill="toself", 
-                name=f"{s['school']}", line_color=COLORS[i % len(COLORS)], opacity=0.6,
-            ))
-        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=460)
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-# ════════════════════════════════════════════════════════
-# 📅 표 C — 원서 접수 및 마감 타임라인
-# ════════════════════════════════════════════════════════
-with tab_c:
-    st.subheader("📅 입학 전형 일정 관리 매트릭스")
-    if not st.session_state.schools:
-        st.info("시트에 저장된 대학 데이터가 없습니다.")
-    else:
-        MONTHS = [f"{m}월" for m in range(1, 13)]
-        EVENT_TYPES = {"applicationOpen": ("접수", "#378ADD"), "earlyDeadline": ("얼리", "#7F77DD"), "regularDeadline": ("마감", "#D85A30"), "resultDate": ("결과", "#639922")}
-
-        for year in [2026, 2027]:
-            st.markdown(f"#### 📅 {year}년도 입시 마일스톤")
-            timeline_rows = []
-            for s in st.session_state.schools:
-                sc = s.get("schedule", {}) or {}
-                r_data = {"목표 학교/전공": f"{s['school']} — {s['major']}"}
-                for m in range(1, 13):
-                    mo = f"{year}-{m:02d}"
-                    cell = ""
-                    for etype, (label, _) in EVENT_TYPES.items():
-                        if sc.get(etype) == mo:
-                            cell = label
-                            break
-                    r_data[MONTHS[m - 1]] = cell
-                timeline_rows.append(r_data)
-
-            def color_cell(val):
-                for etype, (label, color) in EVENT_TYPES.items():
-                    if val == label: return f"background-color:{color};color:white;font-weight:600;text-align:center;"
-                return ""
-
-            st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use_container_width=True, hide_index=True)
+        scores =
