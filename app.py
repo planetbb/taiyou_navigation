@@ -79,6 +79,11 @@ def load_schools_from_sheets():
         schools_list = []
         for row in records:
             r = {str(k).strip().lower(): v for k, v in row.items()}
+            
+            # 구글 시트의 빈 행이나 의미 없는 공백 행 필터링
+            if not r.get("school") or r.get("school") == "—" or r.get("school").strip() == "":
+                continue
+
             try:
                 fit_breakdown = json.loads(r.get("fitbreakdown", "{}")) if r.get("fitbreakdown") else {}
                 schedule = json.loads(r.get("schedule", "{}")) if r.get("schedule") else {}
@@ -125,6 +130,7 @@ def save_schools_to_sheets(schools_list):
             
         rows = [headers]
         for s in schools_list:
+            if not isinstance(s, dict) or not s.get("school"): continue
             rows.append([
                 s.get("country", ""), 
                 s.get("school", ""), 
@@ -159,17 +165,28 @@ def parse_ib_score(school_dict):
     match = re.search(r"(\d+)", str(min_ib))
     return int(match.group(1)) if match else 99
 
-# ── 6. Gemini 정보 추출 함수 (자동 재시도 로직 내장) ──────────────────────
+# ── 6. Gemini 정보 추출 함수 (자동 재시도 및 백업 모델 전환 설계) ──────────────────────
 def fetch_school_data_via_gemini(api_key, country, school, major):
     client = genai.Client(api_key=api_key)
-    system_instruction = "You are an expert college admissions consultant. Analyze data based on the latest guidelines and reply strictly in JSON format matching the schema using lowercase keys specified in ROW_LABELS."
-    user_prompt = f"Target University: {school} in {country}, Major: {major}. IB choices: HL(화학, 영어A, 히스토리), SL(한국어, 일본어, 수학). Return JSON with lowercase keys matching schema."
+    system_instruction = (
+        "You are an expert college admissions consultant. Analyze data based on the latest guidelines "
+        "and reply strictly in JSON format matching the schema keys in ROW_LABELS. "
+        "Ensure all data fields are fully provided in Korean language where appropriate."
+    )
+    user_prompt = (
+        f"Target University: {school} in {country}, Major: {major}. "
+        f"IB choices: HL(화학, 영어A, 히스토리), SL(한국어, 일본어, 수학). "
+        f"Return JSON with keys matching the required schema exactly."
+    )
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            # 503 과부하 대처용 모델 이원화 전략 (기본 2.5-flash -> 실패 시 1.5-flash 우회 가능)
+            target_model = 'gemini-2.5-flash' if attempt < 2 else 'gemini-1.5-flash'
+            
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model=target_model,
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -182,7 +199,7 @@ def fetch_school_data_via_gemini(api_key, country, school, major):
             error_msg = str(e)
             if "429" in error_msg or "503" in error_msg:
                 if attempt < max_retries - 1:
-                    time.sleep(3)
+                    time.sleep(3)  # 3초 대기 후 백업 재기동
                     continue
             st.error(f"Gemini API 에러 (시도 {attempt+1}/{max_retries}): {error_msg}")
             return None
@@ -236,10 +253,45 @@ with tab_a:
             with st.spinner("AI가 입학 가이드라인을 분석하여 구글 시트에 실시간 기록 중입니다..."):
                 fetched_data = fetch_school_data_via_gemini(gemini_key, country_inp, school_inp, major_inp)
                 if fetched_data:
-                    normalized_data = {str(k).strip().lower(): v for k, v in fetched_data.items()}
+                    # ── 🔥 [대소문자/공백 키 유연 정규화 맵 엔진] ──
+                    normalized_data = {}
+                    normalized_data["country"] = country_inp.strip()
+                    normalized_data["school"] = school_inp.strip()
+                    normalized_data["major"] = major_inp.strip()
+                    
+                    for raw_k, raw_v in fetched_data.items():
+                        clean_k = str(raw_k).strip().lower().replace("_", "").replace(" ", "")
+                        
+                        if clean_k in ("acceptance", "acceptancerate"): normalized_data["acceptance"] = raw_v
+                        elif clean_k in ("fitscore", "score"): normalized_data["fitscore"] = int(raw_v) if str(raw_v).isdigit() else 50
+                        elif clean_k in ("minib", "ibscore", "minimumib"): normalized_data["minib"] = raw_v
+                        elif clean_k in ("requirements", "requirement", "courserequirements"): normalized_data["requirements"] = raw_v
+                        elif clean_k in ("tuition", "tuitionfee"): normalized_data["tuition"] = raw_v
+                        elif clean_k in ("dorm", "dormitory", "housing"): normalized_data["dorm"] = raw_v
+                        elif clean_k in ("living", "livingcost", "livingcosts"): normalized_data["living"] = raw_v
+                        elif clean_k in ("scholarship", "scholarships"): normalized_data["scholarship"] = raw_v
+                        elif clean_k in ("intlratio", "internationalratio", "studentratio"): normalized_data["intlratio"] = raw_v
+                        elif clean_k in ("schedule", "dates"): normalized_data["schedule"] = raw_v
+                        elif clean_k in ("documents", "document", "requireddocuments"): normalized_data["documents"] = raw_v
+                        elif clean_k in ("earlyapp", "earlyapplication"): normalized_data["earlyapp"] = raw_v
+                        elif clean_k in ("fitbreakdown", "breakdown"): normalized_data["fitbreakdown"] = raw_v
+                        elif clean_k in ("sourceurl", "url"): normalized_data["sourceurl"] = raw_v
+                        elif clean_k in ("sourcenote", "note"): normalized_data["sourcenote"] = raw_v
+
+                    # 누락된 필드가 있다면 '—' 처리하여 테이블 깨짐 방지
+                    for target_k in ROW_LABELS.keys():
+                        if target_k not in normalized_data:
+                            orig_val = next((v for k, v in fetched_data.items() if k.lower().replace(" ","").replace("_","") == target_k), "—")
+                            normalized_data[target_k] = orig_val
+
+                    if "fitbreakdown" not in normalized_data or not isinstance(normalized_data["fitbreakdown"], dict):
+                        normalized_data["fitbreakdown"] = {"chemistry": 50, "englisha": 50, "history": 50, "math": 50, "overall": 50}
+                    if "schedule" not in normalized_data or not isinstance(normalized_data["schedule"], dict):
+                        normalized_data["schedule"] = {"applicationopen": "—", "earlydeadline": "—", "regulardeadline": "—", "resultdate": "—"}
+
                     st.session_state.schools.append(normalized_data)
                     save_schools_to_sheets(st.session_state.schools)
-                    st.success(f"🎉 {school_inp} 데이터가 구글 스프레드시트에 안전하게 영구 저장되었습니다!")
+                    st.success(f"🎉 {school_inp} 데이터가 규격에 맞게 변환되어 구글 시트에 영구 저장되었습니다!")
                     st.rerun()
 
     st.divider()
@@ -247,7 +299,6 @@ with tab_a:
     if not st.session_state.schools:
         st.info("💡 상단에 타겟 학교를 입력하면 구글 시트에 자동으로 누적 데이터베이스가 구축됩니다.")
     else:
-        # 🔥 [KeyError 근본 해결] fitscore 배열을 안전하게 생성
         scores = []
         for s in st.session_state.schools:
             if isinstance(s, dict):
@@ -261,7 +312,6 @@ with tab_a:
         avg_score = sum(scores) // len(scores) if scores else 0
         m2.metric("평균 매칭도", f"{avg_score}점" if scores else "—")
         
-        # 🔥 [KeyError 근본 해결] 딕셔너리가 불완전해도 .get()으로 우회
         best_school = "—"
         if scores and max(scores) > 0:
             try:
@@ -284,14 +334,14 @@ with tab_a:
 
         st.divider()
 
-        # 각 학교 상세 카드 렌더링
+        # 대학별 상세 데이터 카드 출력
         for i in range(0, len(st.session_state.schools), 2):
             cols = st.columns(2)
             for j, col in enumerate(cols):
                 idx = i + j
                 if idx >= len(st.session_state.schools): break
                 s = st.session_state.schools[idx]
-                if not isinstance(s, dict): continue
+                if not isinstance(s, dict) or not s.get("school") or s.get("school") == "—": continue
                 
                 fit = s.get("fitscore", 50)
                 fit_cls = "fit-high" if fit >= 70 else ("fit-mid" if fit >= 45 else "fit-low")
@@ -338,7 +388,7 @@ with tab_b:
 
         fig_radar = go.Figure()
         for i, s in enumerate(st.session_state.schools):
-            if not isinstance(s, dict): continue
+            if not isinstance(s, dict) or not s.get("school") or s.get("school") == "—": continue
             bd = s.get("fitbreakdown", {})
             vals = [bd.get(k, s.get("fitscore", 50)) for k in DIM_KEYS]
             fig_radar.add_trace(go.Scatterpolar(
@@ -361,7 +411,7 @@ with tab_c:
             st.markdown(f"#### 📅 {year}년도 입시 마일스톤")
             timeline_rows = []
             for s in st.session_state.schools:
-                if not isinstance(s, dict): continue
+                if not isinstance(s, dict) or not s.get("school") or s.get("school") == "—": continue
                 sc = s.get("schedule", {}) or {}
                 r_data = {"목표 학교/전공": f"{s.get('school','—')} — {s.get('major','—')}"}
                 for m in range(1, 13):
