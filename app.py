@@ -91,7 +91,7 @@ def load_schools_from_sheets():
                 fit_breakdown = {}
                 schedule = {}
 
-            # 구글 시트에서 불러올 때 fitscore가 소수점 형태일 수 있으므로 float 변환 안전장치 마련
+            # 로드 시점 1차 방어선
             raw_fit = r.get("fitscore", 50.0)
             try:
                 fit_val = float(raw_fit)
@@ -215,7 +215,7 @@ st.markdown('<div class="main-title">🎓 김태유 진로지도 대시보드</d
 st.markdown(f'<div class="sub-title">IB 매칭 조합 ── HL: {" · ".join(IB_HL)} | SL: {" · ".join(IB_SL)}</div>', unsafe_allow_html=True)
 
 # ── 8. 사이드바 ⚙️ 설정 ──────────────────────────────────────
-with st.sidebar:
+with st.sidebar: # <-- 지난 에러 수정 완료
     st.header("⚙️ API 및 데이터 설정")
     gemini_key = st.text_input("Gemini API Key 입력", type="password")
     if gemini_key:
@@ -269,7 +269,6 @@ with tab_a:
                         
                         if clean_k in ("acceptance", "acceptancerate"): normalized_data["acceptance"] = raw_v
                         elif clean_k in ("fitscore", "score"):
-                            # 소수점 데이터 유입 가능성을 감안하여 float로 파싱
                             try:
                                 normalized_data["fitscore"] = float(raw_v)
                             except:
@@ -311,7 +310,6 @@ with tab_a:
         scores = []
         for s in st.session_state.schools:
             if isinstance(s, dict):
-                # ── 🔥 [방어선 추가] 구글 시트에서 텍스트로 딸려 들어왔을 상황 방어 ──
                 try:
                     scores.append(float(s.get("fitscore", 0.0)))
                 except:
@@ -322,7 +320,7 @@ with tab_a:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("누적 등록 학교", f"{len(st.session_state.schools)}개")
         
-        # ── 🛠️ [Line 312 에러 해결구간] 실수 나눗셈 수치화 및 소수점 둘째 자리 제한 ──
+        # ── 🛠️ [정수분할 에러 수정 완료] 실수 연산 후 반올림 ──
         if scores:
             avg_score = round(sum(scores) / len(scores), 2)
         else:
@@ -360,7 +358,13 @@ with tab_a:
                 s = st.session_state.schools[idx]
                 if not isinstance(s, dict) or not s.get("school") or s.get("school") == "—": continue
                 
-                fit = s.get("fitscore", 50.0)
+                # ── 🛠️ [TypeError 캐스팅 에러 방어 완료] ──
+                raw_fit = s.get("fitscore", 50.0)
+                try:
+                    fit = float(raw_fit)
+                except (TypeError, ValueError):
+                    fit = 50.0
+                    
                 fit_cls = "fit-high" if fit >= 70 else ("fit-mid" if fit >= 45 else "fit-low")
                 sch_name = s.get("school", "—")
 
