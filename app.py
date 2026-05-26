@@ -345,4 +345,4 @@ with tab_c:
                     if val == label: return f"background-color:{color};color:white;font-weight:600;text-align:center;"
                 return ""
 
-            st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use
+            st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use_container_width=True, hide_index=True)
