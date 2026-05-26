@@ -4,10 +4,11 @@ import re
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import time
 from datetime import datetime
 from google import genai
 from google.genai import types
-import gspread  # 오리지널 구글 시트 라이브러리 사용
+import gspread
 
 # ── 1. 페이지 설정 ───────────────────────────────────────────
 st.set_page_config(
@@ -34,7 +35,6 @@ div[data-testid="metric-container"] { background:white; border-radius:10px; padd
 IB_HL = ["화학", "영어A", "히스토리"]
 IB_SL = ["한국어", "일본어", "수학"]
 
-# 🔥 코드 가독성과 대소문자 충돌 방지를 위해 매핑 라벨의 키를 모두 소문자로 통일합니다.
 ROW_LABELS = {
     "country":      "국가",
     "school":       "학교",
@@ -78,7 +78,6 @@ def load_schools_from_sheets():
         
         schools_list = []
         for row in records:
-            # 모든 구글 시트 데이터를 안전하게 소문자 키로 치환
             r = {str(k).strip().lower(): v for k, v in row.items()}
             try:
                 fit_breakdown = json.loads(r.get("fitbreakdown", "{}")) if r.get("fitbreakdown") else {}
@@ -155,30 +154,38 @@ if "schools" not in st.session_state:
     st.session_state.schools = load_schools_from_sheets()
 
 def parse_ib_score(school_dict):
+    if not isinstance(school_dict, dict): return 99
     min_ib = school_dict.get("minib", "—")
     match = re.search(r"(\d+)", str(min_ib))
     return int(match.group(1)) if match else 99
 
-# ── 6. Gemini 정보 추출 함수 ────────────────────────────────
+# ── 6. Gemini 정보 추출 함수 (자동 재시도 로직 내장) ──────────────────────
 def fetch_school_data_via_gemini(api_key, country, school, major):
     client = genai.Client(api_key=api_key)
     system_instruction = "You are an expert college admissions consultant. Analyze data based on the latest guidelines and reply strictly in JSON format matching the schema using lowercase keys specified in ROW_LABELS."
     user_prompt = f"Target University: {school} in {country}, Major: {major}. IB choices: HL(화학, 영어A, 히스토리), SL(한국어, 일본어, 수학). Return JSON with lowercase keys matching schema."
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                temperature=0.2
-            ),
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        st.error(f"Gemini API 에러: {str(e)}")
-        return None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    temperature=0.2
+                ),
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "503" in error_msg:
+                if attempt < max_retries - 1:
+                    time.sleep(3)
+                    continue
+            st.error(f"Gemini API 에러 (시도 {attempt+1}/{max_retries}): {error_msg}")
+            return None
 
 # ── 7. 헤더 타이틀 ──────────────────────────────────────────
 st.markdown('<div class="main-title">🎓 김태유 진로지도 대시보드</div>', unsafe_allow_html=True)
@@ -229,7 +236,6 @@ with tab_a:
             with st.spinner("AI가 입학 가이드라인을 분석하여 구글 시트에 실시간 기록 중입니다..."):
                 fetched_data = fetch_school_data_via_gemini(gemini_key, country_inp, school_inp, major_inp)
                 if fetched_data:
-                    # 💡 강제 소문자 치환 규격화 후 추가
                     normalized_data = {str(k).strip().lower(): v for k, v in fetched_data.items()}
                     st.session_state.schools.append(normalized_data)
                     save_schools_to_sheets(st.session_state.schools)
@@ -241,34 +247,64 @@ with tab_a:
     if not st.session_state.schools:
         st.info("💡 상단에 타겟 학교를 입력하면 구글 시트에 자동으로 누적 데이터베이스가 구축됩니다.")
     else:
-        # 🔥 [KeyError 근본 해결] 모든 연산에서 소문자 "fitscore"와 "school"을 명시합니다.
-        scores = [s.get("fitscore", 0) for s in st.session_state.schools]
+        # 🔥 [KeyError 근본 해결] fitscore 배열을 안전하게 생성
+        scores = []
+        for s in st.session_state.schools:
+            if isinstance(s, dict):
+                scores.append(s.get("fitscore", 0))
+            else:
+                scores.append(0)
+        
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("누적 등록 학교", f"{len(st.session_state.schools)}개")
-        m2.metric("평균 매칭도", f"{sum(scores)//len(scores)}점" if scores else "—")
-        m3.metric("최우수 매칭", st.session_state.schools[scores.index(max(scores))]["school"] if scores else "—")
-        sorted_by_ib = sorted(st.session_state.schools, key=parse_ib_score)
-        m4.metric("진입장벽 최저 학교", sorted_by_ib[0]["school"] if sorted_by_ib else "—")
+        
+        avg_score = sum(scores) // len(scores) if scores else 0
+        m2.metric("평균 매칭도", f"{avg_score}점" if scores else "—")
+        
+        # 🔥 [KeyError 근본 해결] 딕셔너리가 불완전해도 .get()으로 우회
+        best_school = "—"
+        if scores and max(scores) > 0:
+            try:
+                best_idx = scores.index(max(scores))
+                best_obj = st.session_state.schools[best_idx]
+                if isinstance(best_obj, dict):
+                    best_school = best_obj.get("school", "—")
+            except:
+                best_school = "—"
+        m3.metric("최우수 매칭", best_school)
+        
+        lowest_school = "—"
+        try:
+            sorted_by_ib = sorted(st.session_state.schools, key=parse_ib_score)
+            if sorted_by_ib and isinstance(sorted_by_ib[0], dict):
+                lowest_school = sorted_by_ib[0].get("school", "—")
+        except:
+            lowest_school = "—"
+        m4.metric("진입장벽 최저 학교", lowest_school)
 
         st.divider()
 
+        # 각 학교 상세 카드 렌더링
         for i in range(0, len(st.session_state.schools), 2):
             cols = st.columns(2)
             for j, col in enumerate(cols):
                 idx = i + j
                 if idx >= len(st.session_state.schools): break
                 s = st.session_state.schools[idx]
+                if not isinstance(s, dict): continue
+                
                 fit = s.get("fitscore", 50)
                 fit_cls = "fit-high" if fit >= 70 else ("fit-mid" if fit >= 45 else "fit-low")
+                sch_name = s.get("school", "—")
 
                 with col:
                     with st.container():
                         hdr_col, del_col = st.columns([6, 1])
                         with hdr_col:
-                            st.markdown(f"📊 **{s['school']}** &nbsp; <span class='{fit_cls}'>매칭도 {fit}점</span>", unsafe_allow_html=True)
+                            st.markdown(f"📊 **{sch_name}** &nbsp; <span class='{fit_cls}'>매칭도 {fit}점</span>", unsafe_allow_html=True)
                             st.caption(f"{s.get('country','—')} | {s.get('major','—')}")
                         with del_col:
-                            if st.button("🗑️", key=f"del_{s['school']}_{idx}"):
+                            if st.button("🗑️", key=f"del_{sch_name}_{idx}"):
                                 st.session_state.schools.pop(idx)
                                 save_schools_to_sheets(st.session_state.schools)
                                 st.rerun()
@@ -302,11 +338,12 @@ with tab_b:
 
         fig_radar = go.Figure()
         for i, s in enumerate(st.session_state.schools):
+            if not isinstance(s, dict): continue
             bd = s.get("fitbreakdown", {})
             vals = [bd.get(k, s.get("fitscore", 50)) for k in DIM_KEYS]
             fig_radar.add_trace(go.Scatterpolar(
                 r=vals + [vals[0]], theta=DIMS + [DIMS[0]], fill="toself", 
-                name=f"{s['school']}", line_color=COLORS[i % len(COLORS)], opacity=0.6,
+                name=f"{s.get('school', '—')}", line_color=COLORS[i % len(COLORS)], opacity=0.6,
             ))
         fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=460)
         st.plotly_chart(fig_radar, use_container_width=True)
@@ -324,13 +361,14 @@ with tab_c:
             st.markdown(f"#### 📅 {year}년도 입시 마일스톤")
             timeline_rows = []
             for s in st.session_state.schools:
+                if not isinstance(s, dict): continue
                 sc = s.get("schedule", {}) or {}
-                r_data = {"목표 학교/전공": f"{s['school']} — {s['major']}"}
+                r_data = {"목표 학교/전공": f"{s.get('school','—')} — {s.get('major','—')}"}
                 for m in range(1, 13):
                     mo = f"{year}-{m:02d}"
                     cell = ""
                     for etype, (label, _) in EVENT_TYPES.items():
-                        if sc.get(etype) == mo:
+                        if isinstance(sc, dict) and sc.get(etype) == mo:
                             cell = label
                             break
                     r_data[MONTHS[m - 1]] = cell
@@ -341,4 +379,7 @@ with tab_c:
                     if val == label: return f"background-color:{color};color:white;font-weight:600;text-align:center;"
                 return ""
 
-            st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use_container_width=True, hide_index=True)
+            if timeline_rows:
+                st.dataframe(pd.DataFrame(timeline_rows).style.map(color_cell, subset=MONTHS), use_container_width=True, hide_index=True)
+            else:
+                st.info("일정 전형 데이터가 존재하지 않습니다.")
